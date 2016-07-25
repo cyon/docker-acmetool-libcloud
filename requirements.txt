@@ -1,0 +1,4 @@
+apache-libcloud==1.1.0
+dnspython==1.14.0
+dnsyo==2.0.7
+PyYAML==3.11

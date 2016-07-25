@@ -1,0 +1,59 @@
+#!/bin/sh
+
+set -e
+
+if [ "$1" != 'challenge-dns-start' ] && [ "$1" != 'challenge-dns-end' ]; then
+    exit 42
+fi
+
+NAMESERVER_LIST="${NAMESERVER_LIST_PATH}"/nameservers.list
+RANDOM_NAMESERVER_LIST="${NAMESERVER_LIST_PATH}"/random_nameservers.list
+NAMESERVER_RELIABILITY='0.97'
+
+mkdir -p "${NAMESERVER_LIST_PATH}"
+
+# Update nameserver list if the file is older than 1d
+if [ ! -f "${NAMESERVER_LIST}" ] || \
+   [ ! -s "${NAMESERVER_LIST}" ] || \
+   [ $(stat -f %Y "${NAMESERVER_LIST}") -le $(($(date +%s) - 86400))]
+then
+    echo 'Updating nameserver list'
+    # bigbash.it
+    # ----------
+    # CREATE TABLE nameservers (
+    #   ip TEXT,
+    #   name TEXT ,
+    #   country_id TEXT,
+    #   city TEXT,
+    #   version TEXT,
+    #   error TEXT,
+    #   dnssec BOOLEAN,
+    #   reliability FLOAT
+    # )
+    #
+    # MAP nameservers TO 'wget -O - "http://public-dns.info/nameservers.csv" | tail -n+2'
+    #     DELIMITER ',' QUOTE '"' TYPE 'RAW';
+    #
+    # SELECT ip, country_id FROM nameservers
+    #   WHERE reliability > 0.97;
+    # ----------
+    (
+        trap "kill 0" SIGINT; \
+        export LC_ALL=C; \
+        wget -q -O - "http://public-dns.info/nameservers.csv" \
+        | tail -n+2 \
+        | awk -F',' '{q=0; o=""; for (i=1; i<=NF; i+=1) {if (q) o=o","$i; else o=o";"$i; if ($i == "\"") q=1-q; else{ if (substr($i,length($i),1)=="\"") q=0; else if (substr($i,1,1)=="\"") q=1; }}gsub(/\"/,"",o); print substr(o,2)}' \
+        | cut -d $';' -f1,3,8 \
+        | awk -F ';' '($3 > '${NAMESERVER_RELIABILITY}') {print}'\
+        | awk -F ';' '{print $1";"$2}'
+    ) > "${NAMESERVER_LIST}"
+fi
+
+# Take 100 random nameservers and convert it to a yaml file for dnsyo
+shuf -n 100 "${NAMESERVER_LIST}" \
+    | awk -F';' '{print "- ip:", $1; print "  country:", $2; print "  provider:"}' > "${RANDOM_NAMESERVER_LIST}"
+
+
+PYTHONUNBUFFERED=x exec acmetool_update_dns "$@" \
+    "${RANDOM_NAMESERVER_LIST}" \
+    --challenge-threshold 0.95

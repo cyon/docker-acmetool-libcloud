@@ -1,0 +1,204 @@
+#!/usr/bin/env python3
+"""Command-line tool to perform a ACME DNS challenge"""
+
+import argparse
+import math
+import os
+import sys
+from time import sleep
+
+import yaml
+from dnsyo import dnsyo
+from libcloud.dns.providers import get_driver
+from libcloud.dns.types import Provider
+
+
+def fail(*msg):
+    print('Error:', *msg)
+    sys.exit(1)
+
+
+def zone_by_domain(driver, domain):
+    zones = driver.list_zones()
+    domain_parts = domain.split('.')
+    while True:
+        try:
+            return [z for z in zones if z.domain == '.'.join(domain_parts)][0]
+        except IndexError:
+            pass
+
+        domain_parts.pop(0)
+        if len(domain_parts) < 2:
+            break
+
+    fail('No zone found for domain', domain)
+
+
+def acme_record(records, zone_domain, domain):
+    domain_parts = domain.split('.')
+    acme_challenge_name = '_acme-challenge.' + \
+        '.'.join(domain_parts[:-len(zone_domain.split('.'))])
+    for record in records:
+        if record.name == acme_challenge_name and record.type == 'TXT':
+            return record
+
+
+def provider_driver(target_file):
+    with open(target_file, 'r') as file:
+        desired_conf = yaml.load(file)
+
+    if 'desired_conf' not in locals():
+        fail(target_file)
+
+    provider = desired_conf['request']['challenge']['dns-01']['provider']
+    credentials = (desired_conf['request']['challenge']['dns-01']['email'],
+                   desired_conf['request']['challenge']['dns-01']['apikey'])
+
+    return provider_driver_setup(provider, credentials)
+
+
+def provider_driver_setup(provider, credentials):
+    if not hasattr(Provider, provider.upper()):
+        fail('Unknown provider')
+
+    driver = get_driver(getattr(Provider, provider.upper()))
+    return driver(*credentials)
+
+
+def check_dns_visible(challenge_domain, token, nameserver):
+    lookup = dnsyo.lookup(
+        listLocation='',
+        listLocal=nameserver,
+        maxWorkers=20,
+        maxServers='ALL',
+        country=None
+    )
+    lookup.prepareList()
+    lookup.query(
+        domain=challenge_domain,
+        recordType='TXT',
+        progress=False
+    )
+
+    query_success = 0
+    query_total = len(lookup.serverList)
+    quoted_token = '"%s"' % token
+    for result in lookup.results:
+        if result['success'] is True:
+            # Only count results with an equal token response
+            if quoted_token in result['results']:
+                query_success += 1
+            continue
+
+        # Subtract server timeouts from total
+        if 'Server Timeout' in result['results']:
+            query_total -= 1
+        else:
+            print('Found unknown error in dns validation response:',
+                  result['results'])
+
+    return query_success / query_total
+
+
+def challenge_dns_start(driver, domain, token):
+    zone = zone_by_domain(driver, domain)
+    records = zone.list_records()
+
+    record = acme_record(records, zone.domain, domain)
+    # Set the TTL as low as possible for this temporary records
+    record_extra = {'ttl': 120}
+    if record:
+        print('Found ACME record. Updating token.')
+        record.update(data=token, extra=record_extra)
+    else:
+        print('No ACME dns record present. New record will be created.')
+        record = zone.create_record('_acme-challenge.' + domain,
+                                    'TXT', token, extra=record_extra)
+
+    challenge_domain = record.name + '.' + record.zone.domain
+    print('Set up of ACME dns record done. Information stored:',
+          domain, token, challenge_domain)
+    return challenge_domain
+
+
+def wait_for_challenge_check(challenge_domain, token, nameserver, threshold):
+    threshold_reached = False
+    retry_count = 0
+    accum_sleep_time = 0
+    while True:
+        ratio = check_dns_visible(challenge_domain, token, nameserver)
+        print('DNS challenge check ratio:', "%.2f" % ratio)
+        if ratio >= threshold:
+            threshold_reached = True
+            break
+        # Perform a exponential backoff.
+        sleep_time = math.ldexp(0.01, retry_count)
+        sleep(sleep_time)
+        accum_sleep_time += sleep_time
+        retry_count += 1
+        # Due to TTL caching this might take some time
+        # Give up after 10 minutes
+        if accum_sleep_time > 600:
+            break
+
+    if not threshold_reached:
+        fail('Unable to reach threshold. Aborting.')
+
+
+def challenge_dns_end(driver, domain, token):
+    zone = zone_by_domain(driver, domain)
+    records = zone.list_records()
+
+    record = acme_record(records, zone.domain, domain)
+    if record is not None and record.data == token:
+        record.delete()
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--challenge-threshold', type=float, default=0.8,
+                        help='Threshold of successful queried ACME records.')
+    parser.add_argument(
+        'event_type', choices=['challenge-dns-start', 'challenge-dns-end'])
+    parser.add_argument(
+        'domain', help='Domain to perform challenge. ')
+    parser.add_argument(
+        'target_file', help='File name of desired configuration.')
+    parser.add_argument(
+        'token', help='Challenge token.')
+    parser.add_argument(
+        'nameserver', help='Path to list of nameservers to check challenge.')
+    args = parser.parse_args()
+
+    if 'ACME_STATE_DIR' not in os.environ:
+        fail('Environment variable ACME_STATE_DIR missing.')
+
+    target_file = os.path.join(
+        os.environ['ACME_STATE_DIR'], 'desired', args.target_file)
+
+    if not os.path.isfile(target_file):
+        fail('Target file missing:', target_file)
+
+    driver = provider_driver(target_file)
+
+    domain = args.domain
+    token = args.token
+    if args.event_type == 'challenge-dns-start':
+        challenge_domain = challenge_dns_start(driver, domain, token)
+        # Initial sleep
+        print('Perform initial sleep. Wait for propagation.')
+        sleep(20)
+        wait_for_challenge_check(
+            challenge_domain,
+            token,
+            args.nameserver,
+            args.challenge_threshold
+        )
+    elif args.event_type == 'challenge-dns-end':
+        challenge_dns_end(driver, domain, token)
+
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()
