@@ -95,5 +95,5 @@ docker run --rm --volumes-from acmetool cyon/acmetool-libcloud:latest
 
 ### Use certificate from a nginx container
 ```console
-docker run --volumes-from acmetool --name nginx-with-acme-certs -d nginx
+docker run --volumes-from acmetool:ro --name nginx-with-acme-certs -d nginx
 ```
