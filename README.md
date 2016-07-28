@@ -14,6 +14,7 @@ mkdir -p /my/acme/conf
 wget -O /my/acme/conf/responses https://raw.githubusercontent.com/hlandau/acme/master/_doc/response-file.yaml
 # Edit /my/acme/conf/responses file according to your needs
 ```
+
 ### Define your desired domains and DNS provider
 ```console
 cat <<EOF > /my/acme/desired/my.example.com-desire
@@ -32,13 +33,29 @@ request:
   provider: https://acme-v01.api.letsencrypt.org/directory
   challenge:
     dns-01:
-      provider: cloudflare
-      email: login@example.com
-      apikey: 781472cf1d657a9bf46b61dee83c4
+      provider: vultr
+      key: 781472cf1d657a9bf46b61dee83c4
 EOF
 
 # Make sure you lower the file permission of this file 
 # because it contains sensitive information.
+```
+
+The libcloud hook needs to know the DNS provider and a provider specific configuration like username, access token, hostname, ... . This information must be stored in the [desired file](https://github.com/hlandau/acme/blob/master/_doc/SCHEMA.md#desired) under the section 'challenge'.
+For the provider configuration please consult the provider specific [documentation](https://libcloud.readthedocs.io/en/latest/dns/supported_providers.html#provider-matrix).
+
+E.g. PowerDNS setup:
+```yaml
+request:
+  challenge:
+    dns-01:
+      # 'Provider Constant' from https://libcloud.readthedocs.io/en/latest/dns/supported_providers.html#supported-providers
+      provider: powerdns
+      # Provider specific configuration
+      key: mykey
+      host: powerdns4.example.com
+      port: 8081
+      api_version: v1
 ```
 
 ### Get the desired certificates

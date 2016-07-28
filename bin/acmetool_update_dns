@@ -51,10 +51,9 @@ def provider_driver(target_file):
         fail(target_file)
 
     provider = desired_conf['request']['challenge']['dns-01']['provider']
-    credentials = (desired_conf['request']['challenge']['dns-01']['email'],
-                   desired_conf['request']['challenge']['dns-01']['apikey'])
+    driver_params = desired_conf['request']['challenge']['dns-01']
 
-    return provider_driver_setup(provider, credentials)
+    return provider_driver_setup(provider, driver_params)
 
 
 def provider_driver_setup(provider, credentials):
