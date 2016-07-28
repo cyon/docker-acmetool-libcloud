@@ -7,6 +7,7 @@ import os
 import sys
 from time import sleep
 
+import dns.resolver
 import yaml
 from dnsyo import dnsyo
 from libcloud.dns.providers import get_driver
@@ -56,12 +57,12 @@ def provider_driver(target_file):
     return provider_driver_setup(provider, driver_params)
 
 
-def provider_driver_setup(provider, credentials):
+def provider_driver_setup(provider, driver_params):
     if not hasattr(Provider, provider.upper()):
         fail('Unknown provider')
 
     driver = get_driver(getattr(Provider, provider.upper()))
-    return driver(*credentials)
+    return driver(**driver_params)
 
 
 def check_dns_visible(challenge_domain, token, nameserver):
@@ -120,25 +121,44 @@ def challenge_dns_start(driver, domain, token):
     return challenge_domain
 
 
+def sleep_expander(ramp, retry_count, max_sleep):
+    # Perform an exponential backoff
+    sleep_time = math.ldexp(ramp, retry_count)
+    sleep(sleep_time)
+    # Accumulate sleep time
+    accum_sleep_time = sum(
+        math.ldexp(ramp, retry_count) for i in range(retry_count)
+    )
+    return accum_sleep_time > max_sleep
+
+
+def dns_find_apex(domain):
+    domain_parts = domain.split('.')
+    while not domain_parts:
+        answers = dns.resolver.query('.'.join(domain_parts), 'SOA')
+        domain_parts.pop(0)
+
+
+
+def wait_for_dns_propagation(domain, token):
+
+
+
 def wait_for_challenge_check(challenge_domain, token, nameserver, threshold):
     threshold_reached = False
     retry_count = 0
-    accum_sleep_time = 0
     while True:
         ratio = check_dns_visible(challenge_domain, token, nameserver)
         print('DNS challenge check ratio:', "%.2f" % ratio)
         if ratio >= threshold:
             threshold_reached = True
             break
-        # Perform a exponential backoff.
-        sleep_time = math.ldexp(0.01, retry_count)
-        sleep(sleep_time)
-        accum_sleep_time += sleep_time
-        retry_count += 1
+        # Perform an exponential backoff
         # Due to TTL caching this might take some time
         # Give up after 10 minutes
-        if accum_sleep_time > 600:
+        if sleep_expander(0.01, retry_count, 600):
             break
+        retry_count += 1
 
     if not threshold_reached:
         fail('Unable to reach threshold. Aborting.')
@@ -186,7 +206,7 @@ def main():
         challenge_domain = challenge_dns_start(driver, domain, token)
         # Initial sleep
         print('Perform initial sleep. Wait for propagation.')
-        sleep(20)
+        wait_for_dns_propagation(domain, token)
         wait_for_challenge_check(
             challenge_domain,
             token,
