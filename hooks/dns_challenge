@@ -15,7 +15,7 @@ mkdir -p "${NAMESERVER_LIST_PATH}"
 # Update nameserver list if the file is older than 1d
 if [ ! -f "${NAMESERVER_LIST}" ] || \
    [ ! -s "${NAMESERVER_LIST}" ] || \
-   [ $(stat -f %Y "${NAMESERVER_LIST}") -le $(($(date +%s) - 86400)) ]
+   [ $(stat -c '%Y' "${NAMESERVER_LIST}") -le $(($(date +%s) - 86400)) ]
 then
     echo 'Updating nameserver list'
     # bigbash.it
