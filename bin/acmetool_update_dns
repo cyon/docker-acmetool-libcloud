@@ -7,6 +7,7 @@ import os
 import sys
 from time import sleep
 
+import dns.resolver
 import yaml
 from dnsyo import dnsyo
 from libcloud.dns.providers import get_driver
@@ -56,15 +57,15 @@ def provider_driver(target_file):
     return provider_driver_setup(provider, driver_params)
 
 
-def provider_driver_setup(provider, credentials):
+def provider_driver_setup(provider, driver_params):
     if not hasattr(Provider, provider.upper()):
         fail('Unknown provider')
 
     driver = get_driver(getattr(Provider, provider.upper()))
-    return driver(*credentials)
+    return driver(**driver_params)
 
 
-def check_dns_visible(challenge_domain, token, nameserver):
+def check_dns_visible(acme_domain, token, nameserver):
     lookup = dnsyo.lookup(
         listLocation='',
         listLocal=nameserver,
@@ -74,7 +75,7 @@ def check_dns_visible(challenge_domain, token, nameserver):
     )
     lookup.prepareList()
     lookup.query(
-        domain=challenge_domain,
+        domain=acme_domain,
         recordType='TXT',
         progress=False
     )
@@ -114,31 +115,86 @@ def challenge_dns_start(driver, domain, token):
         record = zone.create_record('_acme-challenge.' + domain,
                                     'TXT', token, extra=record_extra)
 
-    challenge_domain = record.name + '.' + record.zone.domain
+    acme_domain = record.name + '.' + record.zone.domain
     print('Set up of ACME dns record done. Information stored:',
-          domain, token, challenge_domain)
-    return challenge_domain
+          domain, token, acme_domain)
+    return acme_domain
 
 
-def wait_for_challenge_check(challenge_domain, token, nameserver, threshold):
+def sleep_expander(ramp, retry_count, max_sleep):
+    # Perform an exponential backoff
+    sleep_time = math.ldexp(ramp, retry_count)
+    sleep(sleep_time)
+    # Accumulate sleep time
+    accum_sleep_time = sum(
+        math.ldexp(ramp, retry_count) for i in range(retry_count)
+    )
+    return accum_sleep_time > max_sleep
+
+
+def authoritative_resolvers(acme_domain):
+    apex = dns.resolver.zone_for_name(acme_domain)
+    ns_records = dns.resolver.query(apex, dns.rdatatype.NS)
+    resolver_list = []
+    for rdata in ns_records:
+        resolver = dns.resolver.Resolver()
+        resolver.nameservers = [
+            dns.resolver.query(str(rdata)).rrset[0].to_text()
+        ]
+        resolver_list.append(resolver)
+
+    return resolver_list
+
+
+def wait_for_dns_propagation(acme_domain, token):
+    """ Wait for DNS update propagation
+
+    Find apex (root domain) and query nameserver records.
+    Query the authoritative nameserver until the changes are propagated.
+    """
+    quoted_token = '"%s"' % token
+    resolver_list = authoritative_resolvers(acme_domain)
+
+    # Start with a delay of approx. 1 second
+    retry_count = 6
+    while True:
+        success_count = 0
+        for resolver in resolver_list:
+            try:
+                for record in resolver.query(acme_domain, dns.rdatatype.TXT):
+                    if str(record) == quoted_token:
+                        success_count += 1
+                        break
+            except dns.exception.DNSException:
+                pass
+
+            # Propagation finished
+            if len(resolver_list) == success_count:
+                return
+
+            # Perform an exponential backoff
+            if sleep_expander(0.01, retry_count, 240):
+                break
+            retry_count += 1
+
+    print('Propagation timed out.')
+
+
+def wait_for_challenge_check(acme_domain, token, nameserver, threshold):
     threshold_reached = False
     retry_count = 0
-    accum_sleep_time = 0
     while True:
-        ratio = check_dns_visible(challenge_domain, token, nameserver)
+        ratio = check_dns_visible(acme_domain, token, nameserver)
         print('DNS challenge check ratio:', "%.2f" % ratio)
         if ratio >= threshold:
             threshold_reached = True
             break
-        # Perform a exponential backoff.
-        sleep_time = math.ldexp(0.01, retry_count)
-        sleep(sleep_time)
-        accum_sleep_time += sleep_time
-        retry_count += 1
+        # Perform an exponential backoff
         # Due to TTL caching this might take some time
         # Give up after 10 minutes
-        if accum_sleep_time > 600:
+        if sleep_expander(0.01, retry_count, 600):
             break
+        retry_count += 1
 
     if not threshold_reached:
         fail('Unable to reach threshold. Aborting.')
@@ -160,7 +216,7 @@ def main():
     parser.add_argument(
         'event_type', choices=['challenge-dns-start', 'challenge-dns-end'])
     parser.add_argument(
-        'domain', help='Domain to perform challenge. ')
+        'domain', help='Domain to perform challenge.')
     parser.add_argument(
         'target_file', help='File name of desired configuration.')
     parser.add_argument(
@@ -183,12 +239,14 @@ def main():
     domain = args.domain
     token = args.token
     if args.event_type == 'challenge-dns-start':
-        challenge_domain = challenge_dns_start(driver, domain, token)
+        acme_domain = challenge_dns_start(driver, domain, token)
         # Initial sleep
         print('Perform initial sleep. Wait for propagation.')
-        sleep(20)
+        wait_for_dns_propagation(acme_domain, token)
+        print('Propagation done.')
+        print('Check public visibility of ACME challenge DNS record.')
         wait_for_challenge_check(
-            challenge_domain,
+            acme_domain,
             token,
             args.nameserver,
             args.challenge_threshold
