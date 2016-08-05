@@ -1,4 +1,4 @@
-FROM cyon/acmetool:0.0
+FROM cyon/acmetool:0.0.56-0
 
 MAINTAINER Dominic Luechinger 'dol@cyon.ch'
 
