@@ -183,14 +183,14 @@ def wait_for_dns_propagation(acme_domain, token):
                 logger.debug("DNS error({0}): {1}".format(e.errno, e.strerror))
                 pass
 
-            # Propagation finished
-            if len(resolver_list) == success_count:
-                return
+        # Propagation finished
+        if len(resolver_list) == success_count:
+            return
 
-            # Perform an exponential backoff
-            if sleep_expander(0.01, retry_count, 240):
-                break
-            retry_count += 1
+        # Perform an exponential backoff
+        if sleep_expander(0.01, retry_count, 240):
+            break
+        retry_count += 1
 
     print('Propagation timed out.')
 
