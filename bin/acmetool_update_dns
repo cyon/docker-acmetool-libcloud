@@ -2,6 +2,7 @@
 """Command-line tool to perform a ACME DNS challenge"""
 
 import argparse
+import logging
 import math
 import os
 import sys
@@ -12,6 +13,10 @@ import yaml
 from dnsyo import dnsyo
 from libcloud.dns.providers import get_driver
 from libcloud.dns.types import Provider
+
+if os.getenv('DEBUG'):
+    logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 
 def fail(*msg):
@@ -124,11 +129,14 @@ def challenge_dns_start(driver, domain, token):
 def sleep_expander(ramp, retry_count, max_sleep):
     # Perform an exponential backoff
     sleep_time = math.ldexp(ramp, retry_count)
+    logger.debug("Taking a nap for: {:.2f}s".format(sleep_time))
     sleep(sleep_time)
     # Accumulate sleep time
     accum_sleep_time = sum(
         math.ldexp(ramp, retry_count) for i in range(retry_count)
     )
+    logger.debug("Slept for {:.2f}s of max {:.2f}s".format(
+        accum_sleep_time, max_sleep))
     return accum_sleep_time > max_sleep
 
 
@@ -160,12 +168,19 @@ def wait_for_dns_propagation(acme_domain, token):
     while True:
         success_count = 0
         for resolver in resolver_list:
+            logger.debug(
+                "Check propagation @{:s}".format(resolver.nameservers[0])
+            )
             try:
                 for record in resolver.query(acme_domain, dns.rdatatype.TXT):
+                    logger.debug(
+                        "DNS propagation response: {:s}".format(str(record))
+                    )
                     if str(record) == quoted_token:
                         success_count += 1
                         break
-            except dns.exception.DNSException:
+            except dns.exception.DNSException as e:
+                logger.debug("DNS error({0}): {1}".format(e.errno, e.strerror))
                 pass
 
             # Propagation finished
