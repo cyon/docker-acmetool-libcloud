@@ -23,7 +23,7 @@ RUN set -ex && \
 
 COPY bin/acmetool_update_dns /usr/bin
 COPY hooks/dns_challenge /usr/lib/acme/hooks/
-COPY hooks/live-update /usr/lib/acme/hooks/live-update
+COPY hooks/live-updated /usr/lib/acme/hooks/
 
 RUN chmod +x /usr/lib/acme/hooks/dns_challenge
 
