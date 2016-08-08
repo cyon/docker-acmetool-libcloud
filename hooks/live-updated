@@ -1,0 +1,10 @@
+#!/bin/sh
+
+set -e
+
+EVENT_NAME="$1"
+[ "${EVENT_NAME}" = "live-updated" ] || exit 42
+
+mkdir /var/lib/acme/proc/
+
+touch /var/lib/acme/proc/live-updated-$(date +%Y-%m-%d)

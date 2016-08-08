@@ -2,7 +2,8 @@
 
 set -e
 
-if [ "$1" != 'challenge-dns-start' ] && [ "$1" != 'challenge-dns-end' ]; then
+EVENT_NAME="$1"
+if [ "${EVENT_NAME}" != 'challenge-dns-start' ] && [ "${EVENT_NAME}" != 'challenge-dns-end' ]; then
     exit 42
 fi
 
